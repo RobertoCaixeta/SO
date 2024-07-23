@@ -13,6 +13,7 @@ typedef struct {
     int *dependencies; // Lista de dependências
     int num_dependencies; // Número de dependências
     sem_t sem; // Semáforo para controlar a execução do processo
+    long exec_time; // Tempo de execução estimado
 } Process;
 
 typedef struct {
@@ -75,6 +76,14 @@ Application read_application_file(const char *filename) {
             dep_token = strtok(NULL, ",");
         }
 
+        if (strcmp(app.processes[i].command, "teste15") == 0) {
+            app.processes[i].exec_time = 15;
+        } else if (strcmp(app.processes[i].command, "teste30") == 0) {
+            app.processes[i].exec_time = 30;
+        } else {
+            app.processes[i].exec_time = LONG_MAX; // valor grande para comandos desconhecidos
+        }
+
         sem_init(&app.processes[i].sem, 0, 0);
         i++;
     }
@@ -112,15 +121,43 @@ void find_initial_processes(Application *app, int **initial_processes, int *num_
 void execute_process(Process *process, int pipe_fd[2]) {
     printf("Processo %d executando!\n", process->id);
     if(strcmp(process->command, "teste15") == 0){
-        for(long long i = 0 ; i < 8000000000 ; i++);
+        volatile long long i;
+        for (i=0; i<8000000000; i++);
+        printf("tempo de 15 segundos\n");
     } else if(strcmp(process->command, "teste30") == 0){
-        for(long long i = 0 ; i < 16000000000; i++);
+        volatile long long i;
+        for (i=0; i<16000000000; i++);
+        printf("tempo de 30 segundos\n");
     }
 
     ProcessResult result;
     result.id = process->id;
     
     write(pipe_fd[1], &result, sizeof(result));
+}
+
+int find_next_process(Application *app, int *process_done) {
+    int next_process = -1;
+    long min_time = LONG_MAX;
+
+    for (int i = 0; i < app->num_processes; i++) {
+        if (!process_done[i]) {
+            int can_execute = 1;
+            for (int j = 0; j < app->processes[i].num_dependencies; j++) {
+                int dep_id = app->processes[i].dependencies[j] - 1;
+                if (dep_id >= 0 && dep_id < app->num_processes && !process_done[dep_id]) {
+                    can_execute = 0;
+                    break;
+                }
+            }
+            if (can_execute && app->processes[i].exec_time < min_time) {
+                min_time = app->processes[i].exec_time;
+                next_process = i;
+            }
+        }
+    }
+
+    return next_process;
 }
 
 int main(int argc, char *argv[]) {
@@ -155,56 +192,27 @@ int main(int argc, char *argv[]) {
     struct timeval makespan_start, makespan_end;
     gettimeofday(&makespan_start, NULL);
 
-    #pragma omp parallel
-    {
-        while (num_initial > 0) {
-            #pragma omp single
-            {
-                // Find the process with the shortest job
-                int shortest_job_index = -1;
-                long long shortest_job_duration = LLONG_MAX;
+    int processes_left = app.num_processes;
+    int no_process_found = 0;
 
-                for (int i = 0; i < num_initial; i++) {
-                    int process_index = initial_processes[i];
-                    long long job_duration = (strcmp(app.processes[process_index].command, "teste15") == 0) ? 8000000000LL : 16000000000LL;
-
-                    if (job_duration < shortest_job_duration) {
-                        shortest_job_duration = job_duration;
-                        shortest_job_index = i;
-                    }
-                }
-
-                int process_index = initial_processes[shortest_job_index];
-                #pragma omp task firstprivate(process_index)
-                {
-                    execute_process(&app.processes[process_index], pipe_fd);
-                    process_done[process_index] = 1;
-
-                    // Remove the executed process from the initial_processes array
-                    for (int i = shortest_job_index; i < num_initial - 1; i++) {
-                        initial_processes[i] = initial_processes[i + 1];
-                    }
-                    num_initial--;
-
-                    // Check for new initial processes whose dependencies are now met
-                    for (int i = 0; i < app.num_processes; i++) {
-                        if (!process_done[i]) {
-                            int dependencies_met = 1;
-                            for (int j = 0; j < app.processes[i].num_dependencies; j++) {
-                                if (!process_done[app.processes[i].dependencies[j]]) {
-                                    dependencies_met = 0;
-                                    break;
-                                }
-                            }
-                            if (dependencies_met) {
-                                num_initial++;
-                                initial_processes = realloc(initial_processes, num_initial * sizeof(int));
-                                initial_processes[num_initial - 1] = i;
-                            }
-                        }
-                    }
+    while (processes_left > 0) {
+        no_process_found = 1;
+        for (int i = 0; i < num_cores; i++) {
+            int next_process = find_next_process(&app, process_done);
+            if (next_process != -1) {
+                if (!process_done[next_process]) {
+                    printf("Executando processo %d\n", app.processes[next_process].id);
+                    execute_process(&app.processes[next_process], pipe_fd);
+                    process_done[next_process] = 1;
+                    processes_left--;
+                    no_process_found = 0;
                 }
             }
+        }
+        printf("Processos restantes: %d\n", processes_left);
+        if (no_process_found) {
+            printf("Nenhum processo encontrado nesta iteração.\n");
+            usleep(1000); // espera 1ms
         }
     }
 

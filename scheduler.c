@@ -4,7 +4,15 @@
 #include <string.h>
 #include <sys/time.h>
 #include <semaphore.h>
-#include <omp.h> // Adiciona o OpenMP
+
+
+typedef enum {
+    READY,
+    RUNNING,
+    BLOCKED,
+    FINISHED
+} ProcessStatus;
+
 
 typedef struct {
     int id;
@@ -12,6 +20,7 @@ typedef struct {
     int *dependencies; // Lista de dependências
     int num_dependencies; // Número de dependências
     sem_t sem; // Semáforo para controlar a execução do processo
+    ProcessStatus status; // Processo status
 } Process;
 
 typedef struct {
@@ -75,6 +84,7 @@ Application read_application_file(const char *filename) {
         }
 
         sem_init(&app.processes[i].sem, 0, 0);
+        app.processes[i].status = BLOCKED;
         i++;
     }
 
@@ -83,15 +93,16 @@ Application read_application_file(const char *filename) {
 }
 
 void execute_process(Process *process, int pipe_fd[2]) {
-    printf("Processo %d executando!\n", process->id);
+    process->status = RUNNING;
+    printf("Processo %d executando...\n", process->id);
     if(strcmp(process->command, "teste15") == 0){
-
-        for(long long i = 0 ; i < 8000000000 ; i++);
-
+        //for(long long i = 0 ; i < 8000000000 ; i++);
+        sleep(15);
     }
 
     else if(strcmp(process->command, "teste30") == 0){
-        for(long long i = 0 ; i < 16000000000; i++);
+        //for(long long i = 0 ; i < 16000000000; i++);
+        sleep(30);
     }
 
     
@@ -100,9 +111,10 @@ void execute_process(Process *process, int pipe_fd[2]) {
     result.id = process->id;
     
     write(pipe_fd[1], &result, sizeof(result));
+    process->status = FINISHED;
 }
 
-void schedule_application_round_robin(Application *app, int quantum, int num_cores) {
+void schedule_application(Application *app, int num_cores) {
     int *process_done = calloc(app->num_processes, sizeof(int));
     if (process_done == NULL) {
         perror("Erro ao alocar memória");
@@ -124,21 +136,18 @@ void schedule_application_round_robin(Application *app, int quantum, int num_cor
     int cores_used = 0;
     while (!all_done) {
         all_done = 1;
-        #pragma omp parallel for num_threads(num_cores) schedule(dynamic)
         for (int i = 0; i < app->num_processes; i++) {
             if (!process_done[i] && cores_used < num_cores) {
-                int dependencies_met = 1;
+                app->processes[i].status = READY;
                 // Loop para verificar se todas dependências do processo já foram executadas
                 for (int j = 0; j < app->processes[i].num_dependencies; j++) {
                     if (!process_done[app->processes[i].dependencies[j] - 1] && app->processes[i].dependencies[j] != 0) {
-                        dependencies_met = 0;
+                        app->processes[i].status = BLOCKED;
                         break;
                     }
                 }
 
-                // Condição em que o processo ainda tem dependências para serem executadas
-                if (dependencies_met) {
-                    #pragma omp critical
+                if (app->processes[i].status == READY) {
                     {
                         pid_t pid = fork();
 
@@ -168,7 +177,6 @@ void schedule_application_round_robin(Application *app, int quantum, int num_cor
         while (cores_used > 0) {
             ProcessResult result;
             if (read(pipe_fd[0], &result, sizeof(result)) > 0) {
-                #pragma omp critical
                 {
                     cores_used--;
 
@@ -210,13 +218,12 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    int quantum = 2;
     int num_cores = atoi(argv[1]);
     const char *filename = argv[2];
 
     Application app = read_application_file(filename);
 
-    schedule_application_round_robin(&app, quantum, num_cores);
+    schedule_application(&app, num_cores);
 
     for (int i = 0; i < app.num_processes; i++) {
         sem_destroy(&app.processes[i].sem);

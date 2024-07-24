@@ -167,6 +167,12 @@ void check_processes(Application *app, int *process_done, int *in_progress) {
     }
 }
 
+void show_available_cores() {
+    int sval;
+    sem_getvalue(&core_sem, &sval);
+    printf("Núcleos disponíveis: %d\n", sval);
+}
+
 int main(int argc, char *argv[]) {
     if (argc != 2) {
         fprintf(stderr, "Usage: %s <num_cores>\n", argv[0]);
@@ -191,6 +197,7 @@ int main(int argc, char *argv[]) {
         int next_process;
         while ((next_process = find_next_process(&app, process_done, in_progress)) != -1) {
             run_process(&app, next_process, process_done, in_progress);
+            show_available_cores();
         }
 
         check_processes(&app, process_done, in_progress);

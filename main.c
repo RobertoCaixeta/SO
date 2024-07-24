@@ -5,7 +5,8 @@
 #include <sys/time.h>
 #include <semaphore.h>
 #include <limits.h>
-#include <omp.h> // Adiciona o OpenMP
+#include <sys/wait.h>
+#include <signal.h>
 
 typedef struct {
     int id;
@@ -24,6 +25,8 @@ typedef struct {
 typedef struct {
     int id;
 } ProcessResult;
+
+sem_t core_sem; // Semáforo para controlar o número de núcleos disponíveis
 
 Application read_application_file(const char *filename) {
     FILE *file = fopen(filename, "r");
@@ -92,56 +95,25 @@ Application read_application_file(const char *filename) {
     return app;
 }
 
-void find_initial_processes(Application *app, int **initial_processes, int *num_initial) {
-    *num_initial = 0;
-
-    // Primeiro passe para contar o número de processos iniciais
-    for (int i = 0; i < app->num_processes; i++) {
-        if (app->processes[i].num_dependencies == 0) {
-            (*num_initial)++;
-        }
-    }
-
-    // Aloca memória suficiente de uma vez só
-    *initial_processes = malloc((*num_initial) * sizeof(int));
-    if (*initial_processes == NULL) {
-        perror("Erro ao alocar memória");
-        exit(EXIT_FAILURE);
-    }
-
-    // Segundo passe para preencher o array de processos iniciais
-    int index = 0;
-    for (int i = 0; i < app->num_processes; i++) {
-        if (app->processes[i].num_dependencies == 0) {
-            (*initial_processes)[index++] = i;
-        }
-    }
-}
-
-void execute_process(Process *process, int pipe_fd[2]) {
+void execute_process(Process *process) {
     printf("Processo %d executando!\n", process->id);
     if(strcmp(process->command, "teste15") == 0){
         volatile long long i;
-        for (i=0; i<8000000000; i++);
-        printf("tempo de 15 segundos\n");
+        for (i = 0; i < 8000000000; i++);
+        printf("Processo %d finalizado (tempo de 15 segundos)\n", process->id);
     } else if(strcmp(process->command, "teste30") == 0){
         volatile long long i;
-        for (i=0; i<16000000000; i++);
-        printf("tempo de 30 segundos\n");
+        for (i = 0; i < 16000000000; i++);
+        printf("Processo %d finalizado (tempo de 30 segundos)\n", process->id);
     }
-
-    ProcessResult result;
-    result.id = process->id;
-    
-    write(pipe_fd[1], &result, sizeof(result));
 }
 
-int find_next_process(Application *app, int *process_done) {
+int find_next_process(Application *app, int *process_done, int *in_progress) {
     int next_process = -1;
     long min_time = LONG_MAX;
 
     for (int i = 0; i < app->num_processes; i++) {
-        if (!process_done[i]) {
+        if (!process_done[i] && !in_progress[i]) {
             int can_execute = 1;
             for (int j = 0; j < app->processes[i].num_dependencies; j++) {
                 int dep_id = app->processes[i].dependencies[j] - 1;
@@ -160,6 +132,41 @@ int find_next_process(Application *app, int *process_done) {
     return next_process;
 }
 
+void run_process(Application *app, int process_index, int *process_done, int *in_progress) {
+    Process *process = &app->processes[process_index];
+
+    sem_wait(&core_sem); // Espera por um núcleo disponível
+
+    pid_t pid = fork();
+    if (pid == 0) { // Processo filho
+        execute_process(process);
+        sem_post(&process->sem); // Sinaliza que o processo terminou
+        exit(0);
+    } else if (pid > 0) { // Processo pai
+        in_progress[process_index] = 1;
+    } else {
+        perror("Erro ao criar processo filho");
+        exit(EXIT_FAILURE);
+    }
+}
+
+void check_processes(Application *app, int *process_done, int *in_progress) {
+    for (int i = 0; i < app->num_processes; i++) {
+        if (in_progress[i]) {
+            int status;
+            pid_t result = waitpid(-1, &status, WNOHANG);
+            if (result > 0) {
+                if (WIFEXITED(status) || WIFSIGNALED(status)) {
+                    process_done[i] = 1;
+                    in_progress[i] = 0;
+                    sem_post(&core_sem); // Libera o núcleo
+                    sem_post(&app->processes[i].sem); // Sinaliza que o processo terminou
+                }
+            }
+        }
+    }
+}
+
 int main(int argc, char *argv[]) {
     if (argc != 2) {
         fprintf(stderr, "Usage: %s <num_cores>\n", argv[0]);
@@ -167,66 +174,46 @@ int main(int argc, char *argv[]) {
     }
 
     int num_cores = atoi(argv[1]);
-    omp_set_num_threads(num_cores);
 
     const char *input_file = "entrada.txt";
     Application app = read_application_file(input_file);
 
-    int *initial_processes;
-    int num_initial;
-    find_initial_processes(&app, &initial_processes, &num_initial);
+    sem_init(&core_sem, 0, num_cores); // Inicializa o semáforo com o número de núcleos
 
     int *process_done = calloc(app.num_processes, sizeof(int));
-    if (process_done == NULL) {
+    int *in_progress = calloc(app.num_processes, sizeof(int));
+    if (!process_done || !in_progress) {
         perror("Erro ao alocar memória");
         exit(EXIT_FAILURE);
     }
 
-    int pipe_fd[2];
-    if (pipe(pipe_fd) == -1) {
-        perror("pipe");
-        free(process_done);
-        exit(EXIT_FAILURE);
-    }
+    while (1) {
+        int next_process;
+        while ((next_process = find_next_process(&app, process_done, in_progress)) != -1) {
+            run_process(&app, next_process, process_done, in_progress);
+        }
 
-    struct timeval makespan_start, makespan_end;
-    gettimeofday(&makespan_start, NULL);
+        check_processes(&app, process_done, in_progress);
 
-    int processes_left = app.num_processes;
-    int no_process_found = 0;
-
-    while (processes_left > 0) {
-        no_process_found = 1;
-        for (int i = 0; i < num_cores; i++) {
-            int next_process = find_next_process(&app, process_done);
-            if (next_process != -1) {
-                if (!process_done[next_process]) {
-                    printf("Executando processo %d\n", app.processes[next_process].id);
-                    execute_process(&app.processes[next_process], pipe_fd);
-                    process_done[next_process] = 1;
-                    processes_left--;
-                    no_process_found = 0;
-                }
+        int all_done = 1;
+        for (int i = 0; i < app.num_processes; i++) {
+            if (!process_done[i]) {
+                all_done = 0;
+                break;
             }
         }
-        printf("Processos restantes: %d\n", processes_left);
-        if (no_process_found) {
-            printf("Nenhum processo encontrado nesta iteração.\n");
-            usleep(1000); // espera 1ms
+        if (all_done) {
+            break; // Todos os processos foram executados
         }
     }
 
-    gettimeofday(&makespan_end, NULL);
-    long makespan = (makespan_end.tv_sec - makespan_start.tv_sec) * 1000000L + (makespan_end.tv_usec - makespan_start.tv_usec);
-    printf("Makespan: %ld microseconds\n", makespan);
-
-    // Free allocated memory
+    // Libera memória alocada
     for (int i = 0; i < app.num_processes; i++) {
         free(app.processes[i].dependencies);
     }
     free(app.processes);
-    free(initial_processes);
     free(process_done);
+    free(in_progress);
 
     return 0;
 }

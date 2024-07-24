@@ -14,6 +14,7 @@ typedef struct {
     int num_dependencies; // Número de dependências
     sem_t sem; // Semáforo para controlar a execução do processo
     long exec_time; // Tempo de execução estimado
+    char status;
 } Process;
 
 typedef struct {
@@ -73,6 +74,11 @@ Application read_application_file(const char *filename) {
         char *dep_token = strtok(token, ",");
         while (dep_token != NULL && strcmp(dep_token, "#") != 0) {
             app.processes[i].dependencies[app.processes[i].num_dependencies++] = atoi(dep_token);
+            if(app.processes[i].dependencies[0] == 0) {
+                app.processes[i].status = 'R';
+            } else {
+                app.processes[i].status = 'W';
+            }
             dep_token = strtok(NULL, ",");
         }
 
@@ -119,29 +125,48 @@ void find_initial_processes(Application *app, int **initial_processes, int *num_
 }
 
 void execute_process(Process *process, int pipe_fd[2]) {
-    printf("Processo %d executando!\n", process->id);
+    printf("Executando processo %d\n", process->id);
+    process->status = 'E';
+    printf("%d: %c\n", process->id, process->status);
     if(strcmp(process->command, "teste15") == 0){
         volatile long long i;
         for (i=0; i<8000000000; i++);
-        printf("tempo de 15 segundos\n");
+        // printf("tempo de 15 segundos\n");
     } else if(strcmp(process->command, "teste30") == 0){
         volatile long long i;
         for (i=0; i<16000000000; i++);
-        printf("tempo de 30 segundos\n");
+        // printf("tempo de 30 segundos\n");
     }
 
     ProcessResult result;
     result.id = process->id;
     
     write(pipe_fd[1], &result, sizeof(result));
+    printf("Processo %d finalizado\n", process->id);
+    process->status = 'F';
 }
 
 int find_next_process(Application *app, int *process_done) {
     int next_process = -1;
-    long min_time = LONG_MAX;
+    long min_time = 1000000;
 
     for (int i = 0; i < app->num_processes; i++) {
+        // se processo i nao estiver pronto
         if (!process_done[i]) {
+            // checa se as dependencias do processo i ja executaram
+            // se sim, verifica se é o menor
+                // se for o menor, esse é o próximo
+                // se nao, procura o menor
+            // se nao, checa o prox
+
+
+            // 1-mapeia todos os processos em que as dependecias ja executaram
+            // 2-verifica qual o menor processo entre eles
+            // 3-retorna o id do menor
+            
+            
+            
+            
             int can_execute = 1;
             for (int j = 0; j < app->processes[i].num_dependencies; j++) {
                 int dep_id = app->processes[i].dependencies[j] - 1;
@@ -172,9 +197,18 @@ int main(int argc, char *argv[]) {
     const char *input_file = "entrada.txt";
     Application app = read_application_file(input_file);
 
+    for(int i=0; i< app.num_processes; i++) {
+        printf("%d: %c\n", i + 1, app.processes[i].status);
+    }
+    printf("--------------------------------\n");
+
     int *initial_processes;
     int num_initial;
     find_initial_processes(&app, &initial_processes, &num_initial);
+    for(int i=0; i< app.num_processes; i++) {
+        printf("%d: %c\n", i + 1, app.processes[i].status);
+    }
+    printf("--------------------------------\n");
 
     int *process_done = calloc(app.num_processes, sizeof(int));
     if (process_done == NULL) {
@@ -201,15 +235,19 @@ int main(int argc, char *argv[]) {
             int next_process = find_next_process(&app, process_done);
             if (next_process != -1) {
                 if (!process_done[next_process]) {
-                    printf("Executando processo %d\n", app.processes[next_process].id);
+                    // printf("Executando processo %d\n", app.processes[next_process].id);
                     execute_process(&app.processes[next_process], pipe_fd);
+                    for(int i=0; i< app.num_processes; i++) {
+                        printf("%d: %c\n", i + 1, app.processes[i].status);
+                    }
+                    printf("--------------------------------\n");
                     process_done[next_process] = 1;
                     processes_left--;
                     no_process_found = 0;
                 }
             }
         }
-        printf("Processos restantes: %d\n", processes_left);
+        // printf("Processos restantes: %d\n", processes_left);
         if (no_process_found) {
             printf("Nenhum processo encontrado nesta iteração.\n");
             usleep(1000); // espera 1ms
@@ -218,7 +256,7 @@ int main(int argc, char *argv[]) {
 
     gettimeofday(&makespan_end, NULL);
     long makespan = (makespan_end.tv_sec - makespan_start.tv_sec) * 1000000L + (makespan_end.tv_usec - makespan_start.tv_usec);
-    printf("Makespan: %ld microseconds\n", makespan);
+    // printf("Makespan: %ld microseconds\n", makespan);
 
     // Free allocated memory
     for (int i = 0; i < app.num_processes; i++) {

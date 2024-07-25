@@ -18,6 +18,7 @@
 #include <limits.h>
 #include <sys/wait.h>
 #include <signal.h>
+#include <ctype.h>
 
 #define WAITING 'W'
 #define READY 'R'
@@ -31,7 +32,7 @@ typedef struct {
     int num_dependencies; // Número de dependências
     sem_t sem; // Semáforo para controlar a execução do processo
     long exec_time; // Tempo de execução estimado
-    long real_exec_time; // Tempo de execução real
+    float real_exec_time; // Tempo de execução real
     char status;
     pid_t pid; // PID do processo
 } Process;
@@ -42,6 +43,12 @@ typedef struct {
     int *execution_order;
     int total_executed;
 } Application;
+
+struct timeval makespan_start, makespan_end;
+
+float time_diff(struct timeval *start, struct timeval *end) {
+  return (end->tv_sec - start->tv_sec) + 1e-6 * (end->tv_usec - start->tv_usec);
+}
 
 int isNumber(char *str) {
     int length = strlen(str);
@@ -170,16 +177,16 @@ void showExecutionOrder(Application *app) {
 
 void execute_process(Process *process) {
     printf("Processo %d executando\n", process->id);
-    // TODO: makespan de cada processo
-    // clock_t start, end;
     if (strcmp(process->command, "teste15") == 0) {
+
         long long i;
-        for (i = 0; i < 8000000000; i++);
+        for (i = 0; i < 5000000000; i++);
         printf("Processo %d finalizado (tempo de 15 segundos)\n", process->id);
     } else if (strcmp(process->command, "teste30") == 0) {
         long long i;
-        for (i = 0; i < 16000000000; i++);
+        for (i = 0; i < 10000000000; i++);
         printf("Processo %d finalizado (tempo de 30 segundos)\n", process->id);
+        
     }
 }
 
@@ -243,6 +250,11 @@ void sets_process_as_finished(Application *app, pid_t pid) {
     }
 }
 
+void save_real_exec_time(Application *app, int index, float time_diff) {
+    app->processes[index].real_exec_time = time_diff;
+    // printf("aqui aquino %f\n", app->processes[index].real_exec_time);
+}
+
 void execute_parallel(Application *app, int num_cores) {
     int active_processes = 0;
     int processes_remaining = app->num_processes;
@@ -256,12 +268,19 @@ void execute_parallel(Application *app, int num_cores) {
 
             pid_t pid = fork();
             if (pid == 0) {
-                if(processes_remaining == app->num_processes) {
-                    // TODO: init makespan
-                    printf("Comecando a medir o makespan aqui\n");
-                }
+                // if(processes_remaining == app->num_processes) {
+                //     // TODO: init makespan
+                //     printf("Comecando a medir o makespan aqui\n");
+                // }
                 // Processo filho executa a tarefa
+                struct timeval start, end;
+                gettimeofday(&start, NULL);
                 execute_process(&app->processes[next_process]);
+                gettimeofday(&end, NULL);
+                printf("porra %f\n", time_diff(&start, &end));
+                // app->processes[next_process].real_exec_time = time_diff(&start, &end);
+                save_real_exec_time(app, next_process, time_diff(&start, &end));
+                printf("aqui aquino %f\n", app->processes[next_process].real_exec_time);
                 exit(0);
             } else if (pid > 0) {
                 // Processo pai continua
@@ -308,10 +327,21 @@ int main(int argc, char *argv[]) {
     Application app = read_application_file(input_file);
     turn_first_processes_ready(&app);
 
+    struct timeval start;
+    struct timeval end;
+
+    gettimeofday(&start, NULL);
     execute_parallel(&app, num_cores);
+    gettimeofday(&end, NULL);
 
     // print_application(&app);
     // showExecutionOrder(&app);
+
+    float makespan = time_diff(&start, &end);
+    printf("Makespan total: %0.2f segundos\n", makespan);
+    for (int i = 0; i < app.num_processes; i++) {
+        printf("Tempo de execucao do processo %d: %0.2f segundos\n", app.processes[i].id, app.processes[i].real_exec_time);
+    }
 
     // Libere memória alocada
     for (int i = 0; i < app.num_processes; i++) {

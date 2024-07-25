@@ -4,11 +4,28 @@
 // - Roberto Caixeta Ribeiro Oliveira - 190019611                       //
 // - Theo Marques da Rocha - 190038489                                  //
 // ==================================================================== //
-// - Compilador: gcc version 9.4.0 (Ubuntu 9.4.0-1ubuntu1~20.04.1)      //
-// - Sistema Operacional: Ubuntu 20.04.3 LTS                            //
+// - Compilador: gcc version (Ubuntu 7.5.0-3ubuntu1~18.04) 7.5.0        //
+// - Sistema Operacional: Ubuntu 18.04                                  //
 // ==================================================================== //
 // - Estratégia de escalonamento escolhida: Shortest Job First          //
 // ==================================================================== //
+
+
+// ==================================================================== //
+// - Como rodar o programa:                                             //
+// - gcc -fopenmp -Wall -Wextra -O0 -o escalonador main.c               //
+// - ./escalonador <numero_de_cores>                                    //
+// ==================================================================== //
+// - Arquivo de entrada deve ter o nome "entrada.txt" ou deve-se        //
+//   a linha 336 para receber o nome do seu arquivo.                    //
+// ==================================================================== //
+
+
+// ==================================================================== //
+// - As funções 346 e 347 servem para debug                             //
+// ==================================================================== //
+
+
 #include <stdio.h>
 #include <unistd.h>
 #include <stdlib.h>
@@ -32,6 +49,7 @@ typedef struct {
     int num_dependencies; // Número de dependências
     sem_t sem; // Semáforo para controlar a execução do processo
     long exec_time; // Tempo de execução estimado
+    long real_exec_time; // Tempo de execução real
     char status;
     pid_t pid; // PID do processo
 } Process;
@@ -141,6 +159,7 @@ Application read_application_file(const char *filename) {
 
         sem_init(&app.processes[i].sem, 0, 0);
         app.processes[i].pid = -1; // Inicializa o PID como -1 (não iniciado)
+        app.processes[i].real_exec_time = 0; // Inicializa o tempo de execução real como 0
         i++;
     }
 
@@ -160,6 +179,7 @@ void print_application(const Application *app) {
         printf("\n");
         printf("Number of Dependencies: %d\n", p.num_dependencies);
         printf("Execution Time: %ld\n", p.exec_time);
+        printf("Real Execution Time: %ld segundos\n", p.real_exec_time);
         printf("Status: %c\n", p.status);
         printf("PID: %d\n\n", p.pid);
     }
@@ -178,11 +198,11 @@ void execute_process(Process *process) {
     printf("Processo %d executando\n", process->id);
     if (strcmp(process->command, "teste15") == 0) {
 
-        long long i;
+        long i;
         for (i = 0; i < 8000000000; i++);
         printf("Processo %d finalizado (tempo de 15 segundos)\n", process->id);
     } else if (strcmp(process->command, "teste30") == 0) {
-        long long i;
+        long i;
         for (i = 0; i < 16000000000; i++);
         printf("Processo %d finalizado (tempo de 30 segundos)\n", process->id);
         
@@ -238,9 +258,12 @@ int find_next_process(Application *app) {
     return next_process;
 }
 
-void sets_process_as_finished(Application *app, pid_t pid) {
+void sets_process_as_finished(Application *app, pid_t pid, int status) {
     for (int i = 0; i < app->num_processes; i++) {
         if (app->processes[i].pid == pid) {
+            if (WIFEXITED(status)) {
+                app->processes[i].real_exec_time = WEXITSTATUS(status);
+            }
             update_process_status(&app->processes[i], FINISHED);
             app->execution_order[app->total_executed++] = app->processes[i].id;
             app->processes[i].pid = -1; // Reseta o PID
@@ -252,6 +275,7 @@ void sets_process_as_finished(Application *app, pid_t pid) {
 void execute_parallel(Application *app, int num_cores) {
     int active_processes = 0;
     int processes_remaining = app->num_processes;
+    struct timeval start, end;
 
     while (processes_remaining > 0) {
         while (active_processes < num_cores && processes_remaining > 0) {
@@ -260,11 +284,14 @@ void execute_parallel(Application *app, int num_cores) {
                 break; // Não há mais processos prontos para executar
             }
 
+            gettimeofday(&start, NULL);
             pid_t pid = fork();
             if (pid == 0) {
                 // Processo filho executa a tarefa
                 execute_process(&app->processes[next_process]);
-                exit(0);
+                gettimeofday(&end, NULL);
+                long exec_time = (end.tv_sec - start.tv_sec);
+                exit(exec_time);
             } else if (pid > 0) {
                 // Processo pai continua
                 app->processes[next_process].pid = pid; // Armazena o PID do processo filho
@@ -282,7 +309,7 @@ void execute_parallel(Application *app, int num_cores) {
             pid_t pid = wait(&status);
             if (pid > 0) {
                 // Marca o processo terminado como FINISHED
-                sets_process_as_finished(app, pid);
+                sets_process_as_finished(app, pid, status);
                 active_processes--;
             }
         }
@@ -294,7 +321,7 @@ void execute_parallel(Application *app, int num_cores) {
             pid_t pid = wait(&status);
             if (pid > 0) {
                 // Marca o processo terminado como FINISHED
-                sets_process_as_finished(app, pid);
+                sets_process_as_finished(app, pid, status);
                 active_processes--;
             }
     }
@@ -310,8 +337,7 @@ int main(int argc, char *argv[]) {
     Application app = read_application_file(input_file);
     turn_first_processes_ready(&app);
 
-    struct timeval start;
-    struct timeval end;
+    struct timeval start, end;
 
     gettimeofday(&start, NULL);
     execute_parallel(&app, num_cores);
@@ -321,9 +347,9 @@ int main(int argc, char *argv[]) {
     // showExecutionOrder(&app);
 
     float makespan = time_diff(&start, &end);
-    printf("Makespan total: %0.2f segundos\n", makespan);
+    printf("\n\nMakespan total: %0.2f segundos\n\n", makespan);
     for (int i = 0; i < app.num_processes; i++) {
-        printf("Tempo estimado de execucao do processo %d: %ld segundos\n", app.processes[i].id, app.processes[i].exec_time);
+        printf("Tempo real de execucao do processo %d: %ld segundos\n", app.processes[i].id, app.processes[i].real_exec_time);
     }
 
     // Libere memória alocada

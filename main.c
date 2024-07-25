@@ -7,7 +7,8 @@
 // - Compilador: gcc version 9.4.0 (Ubuntu 9.4.0-1ubuntu1~20.04.1)      //
 // - Sistema Operacional: Ubuntu 20.04.3 LTS                            //
 // ==================================================================== //
-
+// - Estratégia de escalonamento escolhida: Shortest Job First          //
+// ==================================================================== //
 #include <stdio.h>
 #include <unistd.h>
 #include <stdlib.h>
@@ -30,6 +31,7 @@ typedef struct {
     int num_dependencies; // Número de dependências
     sem_t sem; // Semáforo para controlar a execução do processo
     long exec_time; // Tempo de execução estimado
+    long real_exec_time; // Tempo de execução real
     char status;
     pid_t pid; // PID do processo
 } Process;
@@ -40,6 +42,27 @@ typedef struct {
     int *execution_order;
     int total_executed;
 } Application;
+
+int isNumber(char *str) {
+    int length = strlen(str);
+    if(length == 0) return 0;
+
+    if(str[0] == '-') {
+        if(length == 1 || str[1] == '0') return 0;
+
+        for(int i=1; i<length; i++) {
+            if(!isdigit(str[i])) return 0;
+        }
+    } else {
+        if(str[0] == '0' && length > 1) return 0;
+        
+        for(int i=0; i<length; i++) {
+            if(!isdigit(str[i])) return 0;
+        }
+    }
+
+    return 1;
+}
 
 Application read_application_file(const char *filename) {
     FILE *file = fopen(filename, "r");
@@ -91,6 +114,7 @@ Application read_application_file(const char *filename) {
 
         char *dep_token = strtok(token, ",");
         while (dep_token != NULL && strcmp(dep_token, "#") != 0) {
+            if(!isNumber(dep_token)) break;
             app.processes[i].dependencies[app.processes[i].num_dependencies++] = atoi(dep_token);
             dep_token = strtok(NULL, ",");
         }
@@ -145,13 +169,15 @@ void showExecutionOrder(Application *app) {
 }
 
 void execute_process(Process *process) {
-    printf("Processo %d executando!\n", process->id);
+    printf("Processo %d executando\n", process->id);
+    // TODO: makespan de cada processo
+    // clock_t start, end;
     if (strcmp(process->command, "teste15") == 0) {
-        long i;
+        long long i;
         for (i = 0; i < 8000000000; i++);
         printf("Processo %d finalizado (tempo de 15 segundos)\n", process->id);
     } else if (strcmp(process->command, "teste30") == 0) {
-        long i;
+        long long i;
         for (i = 0; i < 16000000000; i++);
         printf("Processo %d finalizado (tempo de 30 segundos)\n", process->id);
     }
@@ -230,6 +256,10 @@ void execute_parallel(Application *app, int num_cores) {
 
             pid_t pid = fork();
             if (pid == 0) {
+                if(processes_remaining == app->num_processes) {
+                    // TODO: init makespan
+                    printf("Comecando a medir o makespan aqui\n");
+                }
                 // Processo filho executa a tarefa
                 execute_process(&app->processes[next_process]);
                 exit(0);
@@ -280,8 +310,8 @@ int main(int argc, char *argv[]) {
 
     execute_parallel(&app, num_cores);
 
-    print_application(&app);
-    showExecutionOrder(&app);
+    // print_application(&app);
+    // showExecutionOrder(&app);
 
     // Libere memória alocada
     for (int i = 0; i < app.num_processes; i++) {

@@ -1,7 +1,7 @@
 CC = gcc
-CFLAGS = -fopenmp -Wall -Wextra -O2
+CFLAGS = -fopenmp -Wall -Wextra -O0
 TARGET = escalonador
-SRC = main.c
+SRC = test.c
 
 all: $(TARGET)
 

@@ -8,6 +8,11 @@
 #include <sys/wait.h>
 #include <signal.h>
 
+#define WAITING 'W'
+#define READY 'R'
+#define EXECUTING 'E'
+#define FINISHED 'F'
+
 typedef struct {
     int id;
     char command[256]; // Nome do executável
@@ -15,18 +20,14 @@ typedef struct {
     int num_dependencies; // Número de dependências
     sem_t sem; // Semáforo para controlar a execução do processo
     long exec_time; // Tempo de execução estimado
+    char status;
+    pid_t pid; // PID do processo
 } Process;
 
 typedef struct {
     Process *processes;
     int num_processes;
 } Application;
-
-typedef struct {
-    int id;
-} ProcessResult;
-
-sem_t core_sem; // Semáforo para controlar o número de núcleos disponíveis
 
 Application read_application_file(const char *filename) {
     FILE *file = fopen(filename, "r");
@@ -79,6 +80,12 @@ Application read_application_file(const char *filename) {
             dep_token = strtok(NULL, ",");
         }
 
+        if (app.processes[i].num_dependencies == 0) {
+            app.processes[i].status = READY;
+        } else {
+            app.processes[i].status = WAITING;
+        }
+
         if (strcmp(app.processes[i].command, "teste15") == 0) {
             app.processes[i].exec_time = 15;
         } else if (strcmp(app.processes[i].command, "teste30") == 0) {
@@ -88,6 +95,7 @@ Application read_application_file(const char *filename) {
         }
 
         sem_init(&app.processes[i].sem, 0, 0);
+        app.processes[i].pid = -1; // Inicializa o PID como -1 (não iniciado)
         i++;
     }
 
@@ -97,80 +105,144 @@ Application read_application_file(const char *filename) {
 
 void execute_process(Process *process) {
     printf("Processo %d executando!\n", process->id);
-    if(strcmp(process->command, "teste15") == 0){
-        volatile long long i;
+    if (strcmp(process->command, "teste15") == 0) {
+        long long i;
         for (i = 0; i < 8000000000; i++);
         printf("Processo %d finalizado (tempo de 15 segundos)\n", process->id);
-    } else if(strcmp(process->command, "teste30") == 0){
-        volatile long long i;
+    } else if (strcmp(process->command, "teste30") == 0) {
+        long long i;
         for (i = 0; i < 16000000000; i++);
         printf("Processo %d finalizado (tempo de 30 segundos)\n", process->id);
     }
 }
 
-int find_next_process(Application *app, int *process_done, int *in_progress) {
-    int next_process = -1;
-    long min_time = LONG_MAX;
-
+void print_application(const Application *app) {
     for (int i = 0; i < app->num_processes; i++) {
-        if (!process_done[i] && !in_progress[i]) {
-            int can_execute = 1;
-            for (int j = 0; j < app->processes[i].num_dependencies; j++) {
-                int dep_id = app->processes[i].dependencies[j] - 1;
-                if (dep_id >= 0 && dep_id < app->num_processes && !process_done[dep_id]) {
-                    can_execute = 0;
-                    break;
-                }
-            }
-            if (can_execute && app->processes[i].exec_time < min_time) {
-                min_time = app->processes[i].exec_time;
-                next_process = i;
+        Process p = app->processes[i];
+        printf("Process ID: %d\n", p.id);
+        printf("Command: %s\n", p.command);
+        printf("Dependencies: ");
+        for (int j = 0; j < p.num_dependencies; j++) {
+            printf("%d ", p.dependencies[j]);
+        }
+        printf("\n");
+        printf("Number of Dependencies: %d\n", p.num_dependencies);
+        printf("Execution Time: %ld\n", p.exec_time);
+        printf("Status: %c\n", p.status);
+        printf("PID: %d\n\n", p.pid);
+    }
+}
+
+void update_process_status(Process *process, char new_status) {
+    process->status = new_status;
+}
+
+void turn_first_processes_ready(Application *app) {
+    int num_processes = app->num_processes;
+
+    for (int i = 0; i < num_processes; i++) {
+        if (app->processes[i].num_dependencies == 0) {
+            update_process_status(&app->processes[i], READY);
+        }
+    }
+}
+
+int are_dependencies_finished(Process *process, Application *app) {
+    for (int i = 0; i < process->num_dependencies; i++) {
+        int dep_id = process->dependencies[i];
+        for (int j = 0; j < app->num_processes; j++) {
+            if (app->processes[j].id == dep_id && app->processes[j].status != FINISHED) {
+                return 0; // Dependência não finalizada
             }
         }
+    }
+    return 1; // Todas as dependências finalizadas
+}
+
+int find_next_process(Application *app) {
+    int next_process = -1;
+    long min_time = LONG_MAX;
+    int num_processes = app->num_processes;
+
+    for (int i = 0; i < num_processes; i++) {
+        Process *process = &app->processes[i];
+        if (process->status == WAITING && are_dependencies_finished(process, app)) {
+            update_process_status(process, READY);
+        }
+        if (process->status == READY && process->exec_time < min_time) {
+            min_time = process->exec_time;
+            next_process = i;
+        }
+    }
+
+    if (next_process != -1) {
+        update_process_status(&app->processes[next_process], EXECUTING);
     }
 
     return next_process;
 }
 
-void run_process(Application *app, int process_index, int *process_done, int *in_progress) {
-    Process *process = &app->processes[process_index];
+void execute_parallel(Application *app, int num_cores) {
+    int active_processes = 0;
+    int processes_remaining = app->num_processes;
 
-    sem_wait(&core_sem); // Espera por um núcleo disponível
+    while (processes_remaining > 0) {
+        while (active_processes < num_cores && processes_remaining > 0) {
+            int next_process = find_next_process(app);
+            if (next_process == -1) {
+                break; // Não há mais processos prontos para executar
+            }
 
-    pid_t pid = fork();
-    if (pid == 0) { // Processo filho
-        execute_process(process);
-        sem_post(&process->sem); // Sinaliza que o processo terminou
-        exit(0);
-    } else if (pid > 0) { // Processo pai
-        in_progress[process_index] = 1;
-    } else {
-        perror("Erro ao criar processo filho");
-        exit(EXIT_FAILURE);
-    }
-}
+            pid_t pid = fork();
+            if (pid == 0) {
+                // Processo filho executa a tarefa
+                execute_process(&app->processes[next_process]);
+                exit(0);
+            } else if (pid > 0) {
+                // Processo pai continua
+                app->processes[next_process].pid = pid; // Armazena o PID do processo filho
+                active_processes++;
+                processes_remaining--;
+            } else {
+                perror("Erro ao criar o processo");
+                exit(EXIT_FAILURE);
+            }
+        }
 
-void check_processes(Application *app, int *process_done, int *in_progress) {
-    for (int i = 0; i < app->num_processes; i++) {
-        if (in_progress[i]) {
+        // Espera por qualquer processo filho terminar
+        if (active_processes > 0) {
             int status;
-            pid_t result = waitpid(-1, &status, WNOHANG);
-            if (result > 0) {
-                if (WIFEXITED(status) || WIFSIGNALED(status)) {
-                    process_done[i] = 1;
-                    in_progress[i] = 0;
-                    sem_post(&core_sem); // Libera o núcleo
-                    sem_post(&app->processes[i].sem); // Sinaliza que o processo terminou
+            pid_t pid = wait(&status);
+            if (pid > 0) {
+                // Marca o processo terminado como FINISHED
+                for (int i = 0; i < app->num_processes; i++) {
+                    if (app->processes[i].pid == pid) {
+                        update_process_status(&app->processes[i], FINISHED);
+                        app->processes[i].pid = -1; // Reseta o PID
+                        break;
+                    }
                 }
+                active_processes--;
             }
         }
     }
-}
 
-void show_available_cores() {
-    int sval;
-    sem_getvalue(&core_sem, &sval);
-    printf("Núcleos disponíveis: %d\n", sval);
+    // Espera todos os processos filhos terminarem
+    while (active_processes > 0) {
+        int status;
+        pid_t pid = wait(&status);
+        if (pid > 0) {
+            // Marca o processo terminado como FINISHED
+            for (int i = 0; i < app->num_processes; i++) {
+                if (app->processes[i].pid == pid) {
+                    update_process_status(&app->processes[i], FINISHED);
+                    app->processes[i].pid = -1; // Reseta o PID
+                    break;
+                }
+            }
+            active_processes--;
+        }
+    }
 }
 
 int main(int argc, char *argv[]) {
@@ -178,49 +250,20 @@ int main(int argc, char *argv[]) {
         fprintf(stderr, "Usage: %s <num_cores>\n", argv[0]);
         exit(EXIT_FAILURE);
     }
-
     int num_cores = atoi(argv[1]);
-
     const char *input_file = "entrada.txt";
     Application app = read_application_file(input_file);
+    turn_first_processes_ready(&app);
 
-    sem_init(&core_sem, 0, num_cores); // Inicializa o semáforo com o número de núcleos
+    execute_parallel(&app, num_cores);
 
-    int *process_done = calloc(app.num_processes, sizeof(int));
-    int *in_progress = calloc(app.num_processes, sizeof(int));
-    if (!process_done || !in_progress) {
-        perror("Erro ao alocar memória");
-        exit(EXIT_FAILURE);
-    }
+    print_application(&app);
 
-    while (1) {
-        int next_process;
-        while ((next_process = find_next_process(&app, process_done, in_progress)) != -1) {
-            run_process(&app, next_process, process_done, in_progress);
-            show_available_cores();
-        }
-
-        check_processes(&app, process_done, in_progress);
-
-        int all_done = 1;
-        for (int i = 0; i < app.num_processes; i++) {
-            if (!process_done[i]) {
-                all_done = 0;
-                break;
-            }
-        }
-        if (all_done) {
-            break; // Todos os processos foram executados
-        }
-    }
-
-    // Libera memória alocada
+    // Libere memória alocada
     for (int i = 0; i < app.num_processes; i++) {
         free(app.processes[i].dependencies);
     }
     free(app.processes);
-    free(process_done);
-    free(in_progress);
 
     return 0;
 }

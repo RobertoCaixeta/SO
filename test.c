@@ -23,6 +23,7 @@ typedef struct {
     long exec_time; // Tempo de execução estimado
     char status;
     pid_t pid; // PID do processo
+    long actual_exec_time; // Tempo de execução real
 } Process;
 
 typedef struct {
@@ -139,6 +140,7 @@ Application read_application_file(const char *filename) {
 
         sem_init(&app.processes[i].sem, 0, 0);
         app.processes[i].pid = -1; // Inicializa o PID como -1 (não iniciado)
+        app.processes[i].actual_exec_time = 0; // Inicializa o tempo de execução real como 0
         i++;
     }
 
@@ -171,6 +173,7 @@ void print_application(const Application *app) {
         printf("\n");
         printf("Number of Dependencies: %d\n", p.num_dependencies);
         printf("Execution Time: %ld\n", p.exec_time);
+        printf("Actual Execution Time: %ld microseconds\n", p.actual_exec_time);
         printf("Status: %c\n", p.status);
         printf("PID: %d\n\n", p.pid);
     }
@@ -277,11 +280,16 @@ void execute_parallel(Application *app, int num_cores) {
             while (active_processes < num_cores && ready_queues[i].head != NULL) {
                 int next_process = dequeue_process(&ready_queues[i]);
 
+                struct timeval start, end;
+                gettimeofday(&start, NULL);
+
                 pid_t pid = fork();
                 if (pid == 0) {
                     // Processo filho executa a tarefa
                     execute_process(&app->processes[next_process]);
-                    exit(0);
+                    gettimeofday(&end, NULL);
+                    long exec_time = (end.tv_sec - start.tv_sec);
+                    exit(exec_time);
                 } else if (pid > 0) {
                     // Processo pai continua
                     app->processes[next_process].pid = pid; // Armazena o PID do processo filho
@@ -302,6 +310,9 @@ void execute_parallel(Application *app, int num_cores) {
                 // Marca o processo terminado como FINISHED
                 for (int i = 0; i < app->num_processes; i++) {
                     if (app->processes[i].pid == pid) {
+                        if (WIFEXITED(status)) {
+                            app->processes[i].actual_exec_time = WEXITSTATUS(status);
+                        }
                         update_process_status(&app->processes[i], FINISHED);
                         app->processes[i].pid = -1; // Reseta o PID
                         break;
@@ -320,6 +331,9 @@ void execute_parallel(Application *app, int num_cores) {
             // Marca o processo terminado como FINISHED
             for (int i = 0; i < app->num_processes; i++) {
                 if (app->processes[i].pid == pid) {
+                    if (WIFEXITED(status)) {
+                        app->processes[i].actual_exec_time = WEXITSTATUS(status);
+                    }
                     update_process_status(&app->processes[i], FINISHED);
                     app->processes[i].pid = -1; // Reseta o PID
                     break;
@@ -340,6 +354,7 @@ int main(int argc, char *argv[]) {
     Application app = read_application_file(input_file);
 
     execute_parallel(&app, num_cores);
+    print_application(&app);
 
     // Libere memória alocada
     for (int i = 0; i < app.num_processes; i++) {

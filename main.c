@@ -1,3 +1,13 @@
+// ==================================================================== //
+// - Henrique de Miranda Carrer - 180101951                             //
+// - Lucas Aquino Costa - 190055146                                     //
+// - Roberto Caixeta Ribeiro Oliveira - 190019611                       //
+// - Theo Marques da Rocha - 190038489                                  //
+// ==================================================================== //
+// - Compilador: gcc version 9.4.0 (Ubuntu 9.4.0-1ubuntu1~20.04.1)      //
+// - Sistema Operacional: Ubuntu 20.04.3 LTS                            //
+// ==================================================================== //
+
 #include <stdio.h>
 #include <unistd.h>
 #include <stdlib.h>
@@ -27,6 +37,8 @@ typedef struct {
 typedef struct {
     Process *processes;
     int num_processes;
+    int *execution_order;
+    int total_executed;
 } Application;
 
 Application read_application_file(const char *filename) {
@@ -45,6 +57,9 @@ Application read_application_file(const char *filename) {
     }
 
     rewind(file);
+
+    app.execution_order = malloc(sizeof(int) * app.num_processes);
+    app.total_executed = 0;
 
     app.processes = malloc(sizeof(Process) * app.num_processes);
     if (app.processes == NULL) {
@@ -103,19 +118,6 @@ Application read_application_file(const char *filename) {
     return app;
 }
 
-void execute_process(Process *process) {
-    printf("Processo %d executando!\n", process->id);
-    if (strcmp(process->command, "teste15") == 0) {
-        long long i;
-        for (i = 0; i < 8000000000; i++);
-        printf("Processo %d finalizado (tempo de 15 segundos)\n", process->id);
-    } else if (strcmp(process->command, "teste30") == 0) {
-        long long i;
-        for (i = 0; i < 16000000000; i++);
-        printf("Processo %d finalizado (tempo de 30 segundos)\n", process->id);
-    }
-}
-
 void print_application(const Application *app) {
     for (int i = 0; i < app->num_processes; i++) {
         Process p = app->processes[i];
@@ -130,6 +132,28 @@ void print_application(const Application *app) {
         printf("Execution Time: %ld\n", p.exec_time);
         printf("Status: %c\n", p.status);
         printf("PID: %d\n\n", p.pid);
+    }
+}
+
+void showExecutionOrder(Application *app) {
+    printf("Process execution order = ");
+    for(int i=0; i<app->num_processes; i++) {
+        printf("%d ", app->execution_order[i]);
+        if(i < app->num_processes - 1) printf("-> ");
+    }
+    printf("\n");
+}
+
+void execute_process(Process *process) {
+    printf("Processo %d executando!\n", process->id);
+    if (strcmp(process->command, "teste15") == 0) {
+        long i;
+        for (i = 0; i < 8000000000; i++);
+        printf("Processo %d finalizado (tempo de 15 segundos)\n", process->id);
+    } else if (strcmp(process->command, "teste30") == 0) {
+        long i;
+        for (i = 0; i < 16000000000; i++);
+        printf("Processo %d finalizado (tempo de 30 segundos)\n", process->id);
     }
 }
 
@@ -182,6 +206,17 @@ int find_next_process(Application *app) {
     return next_process;
 }
 
+void sets_process_as_finished(Application *app, pid_t pid) {
+    for (int i = 0; i < app->num_processes; i++) {
+        if (app->processes[i].pid == pid) {
+            update_process_status(&app->processes[i], FINISHED);
+            app->execution_order[app->total_executed++] = app->processes[i].id;
+            app->processes[i].pid = -1; // Reseta o PID
+            break;
+        }
+    }
+}
+
 void execute_parallel(Application *app, int num_cores) {
     int active_processes = 0;
     int processes_remaining = app->num_processes;
@@ -215,13 +250,7 @@ void execute_parallel(Application *app, int num_cores) {
             pid_t pid = wait(&status);
             if (pid > 0) {
                 // Marca o processo terminado como FINISHED
-                for (int i = 0; i < app->num_processes; i++) {
-                    if (app->processes[i].pid == pid) {
-                        update_process_status(&app->processes[i], FINISHED);
-                        app->processes[i].pid = -1; // Reseta o PID
-                        break;
-                    }
-                }
+                sets_process_as_finished(app, pid);
                 active_processes--;
             }
         }
@@ -229,19 +258,13 @@ void execute_parallel(Application *app, int num_cores) {
 
     // Espera todos os processos filhos terminarem
     while (active_processes > 0) {
-        int status;
-        pid_t pid = wait(&status);
-        if (pid > 0) {
-            // Marca o processo terminado como FINISHED
-            for (int i = 0; i < app->num_processes; i++) {
-                if (app->processes[i].pid == pid) {
-                    update_process_status(&app->processes[i], FINISHED);
-                    app->processes[i].pid = -1; // Reseta o PID
-                    break;
-                }
+            int status;
+            pid_t pid = wait(&status);
+            if (pid > 0) {
+                // Marca o processo terminado como FINISHED
+                sets_process_as_finished(app, pid);
+                active_processes--;
             }
-            active_processes--;
-        }
     }
 }
 
@@ -258,12 +281,14 @@ int main(int argc, char *argv[]) {
     execute_parallel(&app, num_cores);
 
     print_application(&app);
+    showExecutionOrder(&app);
 
     // Libere memória alocada
     for (int i = 0; i < app.num_processes; i++) {
         free(app.processes[i].dependencies);
     }
     free(app.processes);
+    free(app.execution_order);
 
     return 0;
 }
